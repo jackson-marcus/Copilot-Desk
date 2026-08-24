@@ -1,0 +1,16 @@
+# Pipeline configuration. Paths relative to the repo root.
+
+data:
+  processed_dir: data/processed
+  artifacts_dir: data/artifacts
+  db_path: data/processed/warehouse.duckdb
+  n_customers: 800
+  n_orders: 12000
+  seed: 42
+
+agent:
+  row_limit: 1000
+  eval_path: data/processed/questions.json
+
+eval:
+  experiment_name: copilotdesk
