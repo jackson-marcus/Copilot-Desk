@@ -12,8 +12,7 @@ import pickle
 
 import mlflow
 
-from copilotdesk.agents.pipeline import answer
-from copilotdesk.agents.planner import plan
+from copilotdesk.pipeline import build_analyst_pipeline
 from copilotdesk.settings import get_config, get_settings, resolve_path
 
 logger = logging.getLogger(__name__)
@@ -23,25 +22,29 @@ def evaluate() -> dict:
     cfg = get_config()
     questions = json.loads(resolve_path(cfg["agent"]["eval_path"]).read_text(encoding="utf-8"))
 
+    analyst = build_analyst_pipeline()
+
     intent_correct = 0
     executed = 0
     guard_ok = 0
     results = []
     for item in questions:
-        plan_obj = plan(item["q"])
-        intent_correct += int(plan_obj["intent"] == item["intent"])
-        result = answer(item["q"])
-        ok = "error" not in result
+        # One pass down the pipe yields every measurement: the planner's routing
+        # is read off the envelope rather than recomputed on the side.
+        env = analyst(item["q"])
+        planned_intent = env.get("intent")
+        intent_correct += int(planned_intent == item["intent"])
+        ok = not env.halted
         guard_ok += int(ok)
-        executed += int(ok and len(result.get("data", [])) >= 0)
+        executed += int(ok and env.get("data") is not None)
         results.append(
             {
                 "question": item["q"],
                 "expected_intent": item["intent"],
-                "planned_intent": plan_obj["intent"],
+                "planned_intent": planned_intent,
                 "executed": ok,
-                "sql": result.get("sql"),
-                "narrative": result.get("narrative"),
+                "sql": env.get("sql"),
+                "narrative": env.get("narrative"),
             }
         )
 

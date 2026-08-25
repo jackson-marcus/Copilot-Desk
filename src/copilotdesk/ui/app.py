@@ -1,4 +1,4 @@
-"""Streamlit demo: ask the analyst, watch the agent trace, see the chart + narrative."""
+"""Streamlit demo: ask the analyst, watch the filter trace, see the chart + narrative."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ SAMPLES = [
 
 st.set_page_config(page_title="copilotdesk", page_icon="📊", layout="wide")
 st.title("📊 copilotdesk")
-st.caption("Multi-agent analyst: plan → SQL (guarded) → execute → chart → narrate, fully traced")
+st.caption("Filter pipeline: plan → SQL (guarded) → execute → chart → narrate, fully traced")
 
 
 def _ok() -> bool:
@@ -60,9 +60,9 @@ with tab_ask:
             elif not df.empty:
                 st.metric(df.columns[-1], f"{df.iloc[0][df.columns[-1]]:,.2f}")
             st.code(body["sql"], language="sql")
-            with st.expander("🔍 Agent trace"):
+            with st.expander("🔍 Filter trace"):
                 for step in body["trace"]:
-                    st.markdown(f"**{step['agent']}**")
+                    st.markdown(f"**{step['agent']}** — {step.get('duration_ms', 0):.1f} ms")
                     st.json(step["output"])
 
 with tab_report:

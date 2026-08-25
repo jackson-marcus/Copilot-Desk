@@ -56,9 +56,10 @@ def build_sql(plan: dict) -> str:
     )
 
 
-def guard_sql(sql: str) -> dict:
+def guard_sql(sql: str, row_limit: int | None = None) -> dict:
     """Parse + validate: single statement, SELECT only, no DDL/DML; inject a LIMIT."""
-    cfg = get_config()["agent"]
+    if row_limit is None:
+        row_limit = get_config()["agent"]["row_limit"]
     try:
         statements = sqlglot.parse(sql, read="duckdb")
     except sqlglot.errors.ParseError as exc:
@@ -74,5 +75,5 @@ def guard_sql(sql: str) -> dict:
             return {"ok": False, "reason": f"forbidden operation {type(node).__name__}", "sql": sql}
 
     if not tree.args.get("limit"):
-        tree = tree.limit(cfg["row_limit"])
+        tree = tree.limit(row_limit)
     return {"ok": True, "reason": "validated", "sql": tree.sql(dialect="duckdb")}
