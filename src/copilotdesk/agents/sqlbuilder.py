@@ -48,6 +48,14 @@ def build_sql(plan: dict) -> str:
             f"GROUP BY period ORDER BY period"
         )
     # breakdown / top_n
+    if dim_ref is None:
+        # "top 5" with nothing to rank by used to interpolate the literal None
+        # into the SELECT list and die inside DuckDB's binder. Refuse here, so
+        # the pipe halts with a reason a caller can read.
+        raise ValueError(
+            f"a {plan['intent']} query needs a dimension to group by; "
+            f"supported dimensions are {', '.join(sorted(DIM_COL))}"
+        )
     order = f"ORDER BY {plan['metric']} DESC"
     limit = f" LIMIT {plan['top_n']}" if plan["intent"] == "top_n" and plan["top_n"] else ""
     return (

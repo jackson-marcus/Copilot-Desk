@@ -27,6 +27,7 @@ def evaluate() -> dict:
     intent_correct = 0
     executed = 0
     guard_ok = 0
+    verified = 0
     results = []
     for item in questions:
         # One pass down the pipe yields every measurement: the planner's routing
@@ -37,12 +38,16 @@ def evaluate() -> dict:
         ok = not env.halted
         guard_ok += int(ok)
         executed += int(ok and env.get("data") is not None)
+        verdict = env.get("verdict", "unverified")
+        verified += int(verdict == "verified")
         results.append(
             {
                 "question": item["q"],
                 "expected_intent": item["intent"],
                 "planned_intent": planned_intent,
                 "executed": ok,
+                "verdict": verdict,
+                "checks": [c["check"] for c in env.get("checks", [])],
                 "sql": env.get("sql"),
                 "narrative": env.get("narrative"),
             }
@@ -53,6 +58,9 @@ def evaluate() -> dict:
         "intent_accuracy": round(intent_correct / n, 4),
         "execution_rate": round(executed / n, 4),
         "guardrail_pass_rate": round(guard_ok / n, 4),
+        # Answers every applicable cross-check agreed with. An answer nothing
+        # could check counts as unverified, not as a pass.
+        "verified_rate": round(verified / n, 4),
         "n_questions": n,
     }
 

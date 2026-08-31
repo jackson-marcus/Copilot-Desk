@@ -17,8 +17,6 @@
 
 </div>
 
-> **Portfolio project.** Built to demonstrate the Pipes & Filters architecture and a guard-railed text-to-SQL pipeline on a small synthetic warehouse. Not hardened for production use.
-
 ---
 
 ## The problem
@@ -94,6 +92,61 @@ The guardrail is the reason the executor can assume it is only ever handed gover
 
 Because validation walks the parsed tree rather than string-matching, it isn't fooled by keywords in comments or identifiers. A rejection is recorded as the guardrail's own trace entry *before* the pipe halts, so the audit trail always explains itself.
 
+## Reconciliation: the answer is plausible, but is it true?
+
+The guardrail decides whether the SQL is *safe to run*. Nothing decided whether
+the result was *right*. Those are different questions, and the second one is
+where a text-to-SQL analyst quietly embarrasses you: the query parses, executes,
+returns a tidy frame, and the narrative on top of it is wrong for a reason that
+never surfaces in the SQL.
+
+`ReconcilerFilter` runs after the query and before the narrator, and it goes
+back to the warehouse by a *different route* than the answer did — because each
+failure mode hides somewhere the original query cannot see:
+
+| Check | The failure it catches |
+|---|---|
+| `population` | The rows you can see are not the population you asked about — a `LIMIT` or a filter silently shrank the denominator |
+| `null_metric` | `SUM` skips NULLs and `COUNT(*)` does not, so a ratio built from both drifts the moment the fact table has a hole |
+| `join_integrity` | An inner join to a dimension deletes facts whose key is missing from it, and reports the survivors as the total |
+| `continuity` | "Trended up across 12 periods" is meaningless if four of the calendar's periods never appeared in the result |
+
+The narrator is then only allowed to claim what the reconciler could verify.
+
+### What it catches, and what it costs
+
+`scripts/audit_answers.py` runs the labelled question set and reports both.
+Every number below comes from it:
+
+```
+13 questions -> 12 verified, 1 unverified
+1 answer had a truncated denominator
+
+"Top 3 regions by revenue"
+   share the narrator quotes now          25.8%
+   share it would quote from visible rows 34.1%
+   overstatement avoided                   8.3 pp
+
+audit cost: median 0.43 ms warm, 2.0% of total answer time
+```
+
+That one row is the whole argument. `LIMIT 3` is a perfectly reasonable thing
+for a planner to emit for a "top 3" question, and the three rows it returns are
+correct. But dividing by *those three rows* makes the top region look like 34.1%
+of revenue when it is 25.8% of it — a confident, specific, wrong number, from a
+query with nothing wrong with it. The reconciler re-queries the unrestricted
+population to get the real denominator.
+
+The cost of that safety is ~2% of answer latency, because the checks are cheap
+aggregate queries against a warm connection rather than a second pass over the
+data.
+
+Reproduce with:
+
+```bash
+uv run python scripts/audit_answers.py
+```
+
 ## Getting started
 
 ```bash
@@ -126,7 +179,7 @@ Adding a stage is a one-line change and touches nothing else:
 ```python
 from copilotdesk.pipeline import build_analyst_pipeline, NarratorFilter
 
-pipe = build_analyst_pipeline().then(MyAuditFilter())   # append
+pipe = build_analyst_pipeline().then(MyAuditFilter())  # append
 # or compose(PlannerFilter(), SqlBuilderFilter(), ...) to reorder from scratch
 ```
 
@@ -138,6 +191,8 @@ pipe = build_analyst_pipeline().then(MyAuditFilter())   # append
 | `GET` | `/schema` | Tables and columns in the warehouse |
 | `POST` | `/ask` | Run the full pipeline for one question; returns SQL, data, chart, narrative, and trace |
 | `GET` | `/report` | Latest evaluation metrics + per-question results |
+
+`/ask` responses carry the reconciler's verdict and the checks that ran, so a caller can see whether a number was verified or merely returned.
 
 `/ask` returns `422` when the pipeline halts (e.g. the guardrail rejects the generated SQL), with the halting reason in the detail.
 
@@ -172,6 +227,10 @@ make test            # uv run pytest --cov
 - end-to-end answers and the `/health`, `/schema`, `/ask`, `/report` HTTP contract
 
 ## Limitations
+
+- Reconciliation verifies internal consistency, not correctness of intent. A query that answers a different question than the user asked will pass every check.
+- The checks are keyed to the seeded star schema's dimensions and calendar; a warehouse with a different shape needs them re-specified rather than re-tuned.
+- `unverified` is not `wrong`. One question in the labelled set comes back unverified because no check applies to it, not because a check failed.
 
 - The planner is deterministic keyword routing, not an LLM — it handles the demo's question vocabulary (revenue/orders/AOV by region/category/segment) and falls back to a KPI intent otherwise.
 - The SQL builder targets one fixed star schema; new metrics or dimensions mean extending its mappings.

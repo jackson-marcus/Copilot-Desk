@@ -1,4 +1,4 @@
-"""The filters of the analyst pipe: plan -> SQL -> guard -> execute -> chart -> narrate.
+"""The filters of the analyst pipe: plan -> SQL -> guard -> run -> chart -> reconcile -> narrate.
 
 Each filter is an independent transformation on an :class:`Envelope`. It reads
 only what upstream filters put in the payload, adds its own keys, and emits the
@@ -23,6 +23,7 @@ import pandas as pd
 
 from copilotdesk.agents.planner import plan
 from copilotdesk.agents.sqlbuilder import build_sql, guard_sql
+from copilotdesk.orchestrator.executor import AuditExecutor
 from copilotdesk.pipeline.envelope import Emission, Envelope, TraceEntry
 from copilotdesk.settings import get_config, resolve_path
 
@@ -161,35 +162,109 @@ class ChartFilter(BaseFilter):
         return Emission(trace=chart, payload={"chart": chart})
 
 
+class ReconcilerFilter(BaseFilter):
+    """Cross-check the rows against the warehouse before anyone talks about them.
+
+    The guardrail proves the query was safe to run; this stage asks the separate
+    question of whether the result supports the claims the answer is about to
+    make. It never edits the rows - it produces verified figures for the
+    narrator to quote and a verdict the caller can act on.
+    """
+
+    name = "reconciler"
+
+    def __init__(self, db_path: Path | str | None = None, auditor: AuditExecutor | None = None):
+        self.auditor = auditor if auditor is not None else AuditExecutor(db_path)
+
+    def process(self, envelope: Envelope) -> Emission:
+        result = self.auditor.run(dict(envelope.require("plan")), envelope.require("frame"))
+        return Emission(
+            trace=result.as_dict(),
+            payload={
+                "verdict": result.verdict,
+                "checks": [finding.as_dict() for finding in result.findings],
+                "unchecked": list(result.skipped),
+                "evidence": result.evidence,
+            },
+        )
+
+
 class NarratorFilter(BaseFilter):
-    """Write a takeaway computed from the returned rows - never invented."""
+    """Write a takeaway that only claims what the reconciler could verify."""
 
     name = "narrator"
 
     def process(self, envelope: Envelope) -> Emission:
-        narrative = _narrate(envelope.question, envelope.require("plan"), envelope.require("frame"))
+        narrative = _narrate(
+            envelope.question,
+            envelope.require("plan"),
+            envelope.require("frame"),
+            envelope.get("evidence", {}),
+            envelope.get("checks", []),
+        )
         return Emission(trace=narrative, payload={"narrative": narrative})
 
 
-def _narrate(question: str, plan_obj: dict[str, Any], df: pd.DataFrame) -> str:
+def _plural(word: str) -> str:
+    return f"{word[:-1]}ies" if word.endswith("y") else f"{word}s"
+
+
+def _narrate(
+    question: str,
+    plan_obj: dict[str, Any],
+    df: pd.DataFrame,
+    evidence: dict[str, dict[str, Any]],
+    checks: list[dict[str, Any]],
+) -> str:
     if df.empty:
         return "No rows matched the query."
+    core = _headline(question, plan_obj, df, evidence)
+    caveats = [str(check["detail"]) for check in checks if check.get("status") == "warn"]
+    if caveats:
+        core = f"{core} Caveat: {'; '.join(caveats)}."
+    return core
+
+
+def _headline(
+    question: str,
+    plan_obj: dict[str, Any],
+    df: pd.DataFrame,
+    evidence: dict[str, dict[str, Any]],
+) -> str:
+    metric = plan_obj["metric"]
     if plan_obj["intent"] == "kpi":
         col = df.columns[-1]
         return f"{question.rstrip('?')}: **{df.iloc[0][col]:,.2f}**."
-    metric = plan_obj["metric"]
     if plan_obj["intent"] == "trend":
         first, last = df.iloc[0], df.iloc[-1]
         direction = "up" if last[metric] > first[metric] else "down"
         change = (last[metric] / max(first[metric], 1e-9) - 1) * 100
+        grain = _plural(str(plan_obj.get("grain", "period")))
         return (
             f"{metric.title()} trended {direction} {abs(change):.0f}% across "
-            f"{len(df)} periods, from {first[metric]:,.0f} to {last[metric]:,.0f}."
+            f"{len(df)} {grain}, from {first[metric]:,.0f} to {last[metric]:,.0f}."
         )
+
     dim = plan_obj["dimension"]
     top = df.iloc[0]
-    share = top[metric] / df[metric].sum() * 100
-    return (
-        f"Across {len(df)} {dim}s, **{top[dim]}** leads on {metric} "
-        f"({top[metric]:,.0f}, {share:.0f}% of total)."
+    population = evidence.get("population")
+    if not population:
+        # Either the metric is a ratio or the check could not run: no share claim
+        # is defensible, so the sentence does not make one.
+        return (
+            f"Across the {len(df)} {_plural(dim)} shown, **{top[dim]}** has the highest "
+            f"{metric} ({top[metric]:,.2f}); {metric} values are not summed to a "
+            "warehouse-wide figure here, so no share of total is quoted."
+        )
+
+    total = float(population["population_total"])
+    share = top[metric] / total * 100 if total else 0.0
+    sentence = (
+        f"Across {population['members_total']} {_plural(dim)}, **{top[dim]}** leads on "
+        f"{metric} ({top[metric]:,.0f}, {share:.0f}% of the {total:,.0f} warehouse total)."
     )
+    if population.get("truncated"):
+        sentence += (
+            f" The {len(df)} rows shown cover {population['covered_share']:.0%} of that total."
+        )
+    return sentence

@@ -80,6 +80,7 @@ QUESTIONS = [
     {"q": "Revenue by segment", "intent": "breakdown"},
     {"q": "Top 3 regions by revenue", "intent": "top_n"},
     {"q": "Daily revenue over the year", "intent": "trend"},
+    {"q": "Average order value by region", "intent": "breakdown"},
 ]
 
 

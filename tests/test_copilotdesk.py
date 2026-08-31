@@ -22,7 +22,15 @@ from copilotdesk.pipeline import (
 from copilotdesk.pipeline.envelope import Emission, Envelope, TraceEntry
 from copilotdesk.pipeline.filters import BaseFilter
 
-STAGES = ("planner", "sql_builder", "guardrail", "executor", "chart", "narrator")
+STAGES = (
+    "planner",
+    "sql_builder",
+    "guardrail",
+    "executor",
+    "chart",
+    "reconciler",
+    "narrator",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +196,7 @@ def test_end_to_end_answers(warehouse):
     breakdown = as_answer(analyst("Show revenue by region"))
     assert breakdown["chart"] == "bar" and len(breakdown["data"]) == 4  # 4 regions
     assert "leads on revenue" in breakdown["narrative"]
+    assert breakdown["verdict"] == "verified"
 
     trend = as_answer(analyst("Show monthly revenue"))
     assert trend["chart"] == "line" and len(trend["data"]) == 12  # 12 months
@@ -240,6 +249,8 @@ def test_api_contract(api_client):
 
     body = api_client.post("/ask", json={"question": "Top 5 categories by revenue"}).json()
     assert body["intent"] == "top_n" and body["chart"] == "bar"
+    assert body["verdict"] == "verified"
+    assert {c["check"] for c in body["checks"]} == {"population", "null_metric"}
     assert "LIMIT" in body["sql"].upper()
     assert [step["agent"] for step in body["trace"]] == list(STAGES)
     assert all("duration_ms" in step for step in body["trace"])

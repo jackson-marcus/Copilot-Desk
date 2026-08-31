@@ -17,12 +17,24 @@ from copilotdesk.pipeline.filters import (
     GuardrailFilter,
     NarratorFilter,
     PlannerFilter,
+    ReconcilerFilter,
     SqlBuilderFilter,
 )
 from copilotdesk.pipeline.runner import Pipeline, compose
 
-#: Payload keys the HTTP contract publishes. ``plan`` and ``frame`` stay internal.
-ANSWER_KEYS = ("sql", "intent", "chart", "narrative", "data", "columns")
+#: Payload keys the HTTP contract publishes. ``plan``, ``frame`` and the raw
+#: reconciler ``evidence`` stay internal.
+ANSWER_KEYS = (
+    "sql",
+    "intent",
+    "chart",
+    "narrative",
+    "data",
+    "columns",
+    "verdict",
+    "checks",
+    "unchecked",
+)
 
 
 def build_analyst_pipeline() -> Pipeline:
@@ -33,6 +45,7 @@ def build_analyst_pipeline() -> Pipeline:
         GuardrailFilter(),
         ExecutorFilter(),
         ChartFilter(),
+        ReconcilerFilter(),
         NarratorFilter(),
     )
 
@@ -61,6 +74,7 @@ __all__ = [
     "NarratorFilter",
     "Pipeline",
     "PlannerFilter",
+    "ReconcilerFilter",
     "SqlBuilderFilter",
     "TraceEntry",
     "as_answer",
